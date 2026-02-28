@@ -74,9 +74,10 @@ jobs:
       with:
         version: latest
     
-    - name: Configure gcloud
+    - name: Set GCP Project
       run: |
-        gcloud config set project ${{ env.GCP_PROJECT }}
+        gcloud config set project my-olympic-etl
+        gcloud config list
     
     - name: Download Artifacts
       uses: actions/download-artifact@v4
