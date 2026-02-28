@@ -1,0 +1,184 @@
+# Exemplo de Configuração do Inventory Ansible
+# Copy this file to ansible/inventory/hosts.yml and update with your values
+
+all:
+  vars:
+    # ============================================
+    # GCP Configuration
+    # ============================================
+    gcp_project_id: "my-olympic-project"        # ← Change to your GCP Project ID
+    gcp_region: "us-central1"                   # GCP region
+    gcp_zone: "us-central1-a"                   # GCP zone
+    
+    # ============================================
+    # Environment Configuration
+    # ============================================
+    environment: "dev"                          # Options: dev, staging, prod
+    
+    # ============================================
+    # Service Account Configuration
+    # ============================================
+    gcp_service_account_name: "beam-sa"         # Service account name
+    gcp_service_account_email: "beam-sa@{{ gcp_project_id }}.iam.gserviceaccount.com"
+    
+    # ============================================
+    # BigQuery Configuration
+    # ============================================
+    gcp_dataset_name: "olympics"                # Dataset name
+    gcp_bigquery_table: "medals"                # Main table name
+    gcp_dataset_location: "us-central1"         # Dataset location
+    gcp_dataset_expiration: 7776000000          # 90 days in milliseconds
+    
+    # ============================================
+    # Cloud Storage Configuration
+    # ============================================
+    gcp_bucket_prefix: "{{ gcp_project_id }}"   # Bucket name prefix
+    gcp_bucket_input: "{{ gcp_bucket_prefix }}-input"      # Input bucket
+    gcp_bucket_temp: "{{ gcp_bucket_prefix }}-temp"        # Temp bucket
+    gcp_bucket_dlq: "{{ gcp_bucket_prefix }}-dlq"          # DLQ bucket
+    gcp_bucket_output: "{{ gcp_bucket_prefix }}-output"    # Output bucket
+    
+    # ============================================
+    # Dataflow Configuration
+    # ============================================
+    dataflow_template_name: "olympic-etl"
+    dataflow_template_path: "gs://{{ gcp_project_id }}-beam-templates/{{ dataflow_template_name }}-{{ environment }}"
+    dataflow_job_name: "olympic-etl-{{ environment }}"
+    dataflow_workers: 2                         # Min workers
+    dataflow_max_workers: 20                    # Max workers
+    dataflow_machine_type: "n1-standard-4"      # Machine type
+    dataflow_disk_size: 100                     # Disk size in GB
+    dataflow_network: "default"                 # VPC network
+    dataflow_subnetwork: ""                     # Subnet (optional)
+    
+    # ============================================
+    # Docker Configuration
+    # ============================================
+    docker_compose_version: "2.20.0"            # Docker Compose version
+    artifact_registry_repo: "beam"              # Artifact Registry repo
+    artifact_registry_location: "{{ gcp_region }}"
+    docker_image_name: "olympic-etl"
+    docker_image_tag: "latest"
+    docker_registry: "{{ gcp_region }}-docker.pkg.dev"
+    docker_image_full: "{{ docker_registry }}/{{ gcp_project_id }}/{{ artifact_registry_repo }}/{{ docker_image_name }}:{{ docker_image_tag }}"
+    
+    # ============================================
+    # Python Configuration
+    # ============================================
+    python_version: "3.11"                      # Python version
+    ansible_python_interpreter: "/usr/bin/python3"
+    
+    # ============================================
+    # Cloud Scheduler Configuration
+    # ============================================
+    scheduler_enabled: true                     # Enable Cloud Scheduler
+    scheduler_schedule: "0 6 * * *"            # 6 AM UTC daily
+    scheduler_timezone: "UTC"
+    scheduler_job_name: "olympic-etl-{{ environment }}-daily"
+    
+    # ============================================
+    # Logging Configuration
+    # ============================================
+    logging_level: "INFO"                       # Logging level
+    cloud_logging_enabled: true                 # Enable Cloud Logging
+    ansible_log_dir: "./ansible/logs"           # Ansible log directory
+    
+    # ============================================
+    # Azure Configuration (Optional)
+    # ============================================
+    azure_enabled: false                        # Enable Azure resources
+    azure_resource_group: "olympic-rg"          # Resource group name
+    azure_region: "eastus"                      # Azure region
+    azure_subscription_id: ""                   # Your subscription ID
+    azure_storage_account: "olympicdatalake"    # Storage account name
+    azure_data_factory_name: "olympic-adf"      # Data Factory name
+    
+    # ============================================
+    # Slack Notifications (Optional)
+    # ============================================
+    slack_notifications_enabled: false          # Enable Slack notifications
+    slack_webhook_url: ""                       # Slack webhook URL
+    slack_channel: "#data-pipeline"             # Slack channel
+    slack_username: "Olympic ETL Bot"           # Bot username
+    
+    # ============================================
+    # Monitoring Configuration
+    # ============================================
+    monitoring_enabled: true                    # Enable Cloud Monitoring
+    grafana_enabled: false                      # Enable Grafana (local docker-compose)
+    prometheus_enabled: false                   # Enable Prometheus (local docker-compose)
+    
+    # ============================================
+    # IAM Roles to Grant
+    # ============================================
+    gcp_iam_roles:
+      - roles/dataflow.worker
+      - roles/bigquery.dataEditor
+      - roles/storage.objectAdmin
+      - roles/logging.logWriter
+      - roles/monitoring.metricWriter
+    
+    # ============================================
+    # Deployment Settings
+    # ============================================
+    skip_confirmation: false                    # Skip confirmation prompts
+    async_mode: false                           # Enable async execution
+    
+  children:
+    # Localhost for local deployments
+    local:
+      hosts:
+        localhost:
+          ansible_connection: local
+          ansible_python_interpreter: "{{ ansible_python_interpreter }}"
+    
+    # GCP resources
+    gcp:
+      hosts:
+        localhost:
+          ansible_connection: local
+          ansible_python_interpreter: "{{ ansible_python_interpreter }}"
+    
+    # Azure resources
+    azure:
+      hosts:
+        localhost:
+          ansible_connection: local
+          ansible_python_interpreter: "{{ ansible_python_interpreter }}"
+    
+    # Docker resources
+    docker:
+      hosts:
+        localhost:
+          ansible_connection: local
+          ansible_python_interpreter: "{{ ansible_python_interpreter }}"
+
+# Environment-specific overrides
+# Create separate files for each environment:
+# - ansible/inventory/dev.yml
+# - ansible/inventory/staging.yml
+# - ansible/inventory/prod.yml
+
+# Example for dev.yml:
+# all:
+#   vars:
+#     environment: dev
+#     gcp_project_id: my-project-dev
+#     dataflow_workers: 2
+#     dataflow_max_workers: 10
+
+# Example for staging.yml:
+# all:
+#   vars:
+#     environment: staging
+#     gcp_project_id: my-project-staging
+#     dataflow_workers: 3
+#     dataflow_max_workers: 20
+
+# Example for prod.yml:
+# all:
+#   vars:
+#     environment: prod
+#     gcp_project_id: my-project-prod
+#     dataflow_workers: 5
+#     dataflow_max_workers: 50

@@ -1,0 +1,475 @@
+{
+  "$schema": "http://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "dataFactoryName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the data factory"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "eastus",
+      "metadata": {
+        "description": "Location for all resources"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "defaultValue": "dev",
+      "allowedValues": ["dev", "staging", "prod"],
+      "metadata": {
+        "description": "Environment (dev/staging/prod)"
+      }
+    },
+    "dataLakeStorageAccountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Azure Data Lake Storage Account"
+      }
+    },
+    "dataLakeStorageAccountKey": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Access key for the Data Lake Storage Account"
+      }
+    },
+    "googleBigQueryProjectId": {
+      "type": "string",
+      "metadata": {
+        "description": "GCP Project ID for BigQuery"
+      }
+    }
+  },
+  "variables": {
+    "dataFactoryName": "[parameters('dataFactoryName')]",
+    "linkedServiceStorageName": "AzureDataLakeStorageLinkedService",
+    "linkedServiceGCPName": "GoogleCloudStorageLinkedService",
+    "linkedServiceBigQueryName": "BigQueryLinkedService",
+    "pipelineName": "OlympicETLPipeline",
+    "triggerScheduleName": "DailyScheduleTrigger"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.DataFactory/factories",
+      "apiVersion": "2018-06-01",
+      "name": "[variables('dataFactoryName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "globalParameters": {
+          "env": {
+            "type": "string",
+            "value": "[parameters('environment')]"
+          },
+          "project_id": {
+            "type": "string",
+            "value": "[parameters('googleBigQueryProjectId')]"
+          },
+          "data_retention_days": {
+            "type": "int",
+            "value": 90
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/linkedservices",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(variables('dataFactoryName'), '/', variables('linkedServiceStorageName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories', variables('dataFactoryName'))]"
+      ],
+      "properties": {
+        "type": "AzureBlobFS",
+        "typeProperties": {
+          "url": "[concat('https://', parameters('dataLakeStorageAccountName'), '.dfs.core.windows.net')]",
+          "accountKey": {
+            "type": "SecureString",
+            "value": "[parameters('dataLakeStorageAccountKey')]"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(variables('dataFactoryName'), '/RestApiDataset')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories', variables('dataFactoryName'))]"
+      ],
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "RestApiLinkedService",
+          "type": "LinkedServiceReference"
+        },
+        "type": "RestResource",
+        "typeProperties": {
+          "relativeUrl": {
+            "value": "@dataset().RelativeUrl",
+            "type": "Expression"
+          }
+        },
+        "parameters": {
+          "RelativeUrl": {
+            "type": "string"
+          }
+        },
+        "schema": []
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(variables('dataFactoryName'), '/DataLakeDataset')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories', variables('dataFactoryName'))]",
+        "[resourceId('Microsoft.DataFactory/factories/linkedservices', variables('dataFactoryName'), variables('linkedServiceStorageName'))]"
+      ],
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "[variables('linkedServiceStorageName')]",
+          "type": "LinkedServiceReference"
+        },
+        "type": "Parquet",
+        "typeProperties": {
+          "location": {
+            "type": "AzureBlobFSLocation",
+            "fileSystem": "[concat(parameters('environment'), '-raw')]",
+            "folderPath": "olympics",
+            "fileName": {
+              "value": "@concat('olympics_', formatDateTime(utcnow(), 'yyyy-MM-dd_HHmm'), '.parquet')",
+              "type": "Expression"
+            }
+          },
+          "compressionCodec": "snappy"
+        },
+        "schema": []
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "name": "[variables('pipelineName')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories', variables('dataFactoryName'))]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', variables('dataFactoryName'), 'RestApiDataset')]",
+        "[resourceId('Microsoft.DataFactory/factories/datasets', variables('dataFactoryName'), 'DataLakeDataset')]"
+      ],
+      "properties": {
+        "activities": [
+          {
+            "name": "Copy Olympics Data",
+            "type": "Copy",
+            "dependsOn": [],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 2,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "userProperties": [],
+            "typeProperties": {
+              "source": {
+                "type": "RestSource",
+                "httpRequestTimeout": "00:01:40",
+                "requestInterval": "00.00:00:00.010",
+                "requestMethod": "GET",
+                "paginationRules": {
+                  "supportRFC5988": true
+                }
+              },
+              "sink": {
+                "type": "ParquetSink",
+                "storeSettings": {
+                  "type": "AzureBlobFSWriteSettings"
+                },
+                "formatSettings": {
+                  "type": "ParquetWriteSettings"
+                }
+              },
+              "enableStaging": true,
+              "stagingSettings": {
+                "linkedServiceName": {
+                  "referenceName": "[variables('linkedServiceStorageName')]",
+                  "type": "LinkedServiceReference"
+                },
+                "path": "[concat(parameters('environment'), '-staging/olympics')]"
+              },
+              "translator": {
+                "type": "TabularTranslator",
+                "mappings": [
+                  {
+                    "source": {
+                      "path": "$['athlete_id']"
+                    },
+                    "sink": {
+                      "name": "athlete_id",
+                      "type": "String"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "$['athlete_name']"
+                    },
+                    "sink": {
+                      "name": "athlete_name",
+                      "type": "String"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "$['event_id']"
+                    },
+                    "sink": {
+                      "name": "event_id",
+                      "type": "String"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "$['country_code']"
+                    },
+                    "sink": {
+                      "name": "country_code",
+                      "type": "String"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "$['medal_type']"
+                    },
+                    "sink": {
+                      "name": "medal_type",
+                      "type": "String"
+                    }
+                  },
+                  {
+                    "source": {
+                      "path": "$['year']"
+                    },
+                    "sink": {
+                      "name": "year",
+                      "type": "Int32"
+                    }
+                  }
+                ]
+              }
+            },
+            "inputs": [
+              {
+                "referenceName": "RestApiDataset",
+                "type": "DatasetReference",
+                "parameters": {
+                  "RelativeUrl": "athletes"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "referenceName": "DataLakeDataset",
+                "type": "DatasetReference"
+              }
+            ]
+          },
+          {
+            "name": "Execute Beam Job",
+            "type": "DatabricksNotebook",
+            "dependsOn": [
+              {
+                "activity": "Copy Olympics Data",
+                "dependencyConditions": ["Succeeded"]
+              }
+            ],
+            "policy": {
+              "timeout": "0.02:00:00",
+              "retry": 1,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "userProperties": [],
+            "typeProperties": {
+              "notebookPath": "/Repos/olympic-etl/notebooks/beam_pipeline",
+              "baseParameters": {
+                "input_path": {
+                  "value": "@activity('Copy Olympics Data').output.dataWritten",
+                  "type": "Expression"
+                },
+                "environment": {
+                  "value": "@pipeline().globalParameters.env",
+                  "type": "Expression"
+                },
+                "project_id": {
+                  "value": "@pipeline().globalParameters.project_id",
+                  "type": "Expression"
+                }
+              }
+            },
+            "linkedServiceName": {
+              "referenceName": "DatabricksLinkedService",
+              "type": "LinkedServiceReference"
+            }
+          },
+          {
+            "name": "Validate BigQuery Data",
+            "type": "Lookup",
+            "dependsOn": [
+              {
+                "activity": "Execute Beam Job",
+                "dependencyConditions": ["Succeeded"]
+              }
+            ],
+            "policy": {
+              "timeout": "0.01:00:00",
+              "retry": 1,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "userProperties": [],
+            "typeProperties": {
+              "source": {
+                "type": "BigQuerySource",
+                "query": "SELECT COUNT(*) as record_count FROM `@{pipeline().globalParameters.project_id}.olympic_analytics.medals` WHERE DATE(processed_date) = CURRENT_DATE()",
+                "queryTimeout": "00:10:00"
+              },
+              "dataset": {
+                "referenceName": "BigQueryDataset",
+                "type": "DatasetReference"
+              },
+              "firstRowOnly": true
+            }
+          },
+          {
+            "name": "If Data Valid",
+            "type": "IfCondition",
+            "dependsOn": [
+              {
+                "activity": "Validate BigQuery Data",
+                "dependencyConditions": ["Succeeded"]
+              }
+            ],
+            "userProperties": [],
+            "typeProperties": {
+              "expression": {
+                "value": "@greaterOrEquals(int(activity('Validate BigQuery Data').output.firstRow.record_count), 1)",
+                "type": "Expression"
+              },
+              "ifTrueActivities": [
+                {
+                  "name": "Log Success",
+                  "type": "WebActivity",
+                  "dependsOn": [],
+                  "policy": {
+                    "timeout": "0.01:00:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "userProperties": [],
+                  "typeProperties": {
+                    "url": {
+                      "value": "@pipeline().parameters.SuccessWebhookUrl",
+                      "type": "Expression"
+                    },
+                    "method": "POST",
+                    "body": {
+                      "value": "@json(concat('{\"status\": \"success\", \"pipeline\": \"', pipeline().Pipeline, '\", \"runId\": \"', pipeline().RunId, '\", \"timestamp\": \"', utcNow(), '\"}'))",
+                      "type": "Expression"
+                    }
+                  }
+                }
+              ],
+              "ifFalseActivities": [
+                {
+                  "name": "Log Failure",
+                  "type": "WebActivity",
+                  "dependsOn": [],
+                  "policy": {
+                    "timeout": "0.01:00:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "userProperties": [],
+                  "typeProperties": {
+                    "url": {
+                      "value": "@pipeline().parameters.FailureWebhookUrl",
+                      "type": "Expression"
+                    },
+                    "method": "POST",
+                    "body": {
+                      "value": "@json(concat('{\"status\": \"failure\", \"pipeline\": \"', pipeline().Pipeline, '\", \"runId\": \"', pipeline().RunId, '\", \"reason\": \"no_data_in_bigquery\", \"timestamp\": \"', utcNow(), '\"}'))",
+                      "type": "Expression"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "parameters": {
+          "SuccessWebhookUrl": {
+            "type": "string",
+            "defaultValue": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+          },
+          "FailureWebhookUrl": {
+            "type": "string",
+            "defaultValue": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+          }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-02-28T00:00:00Z"
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/triggers",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(variables('dataFactoryName'), '/', variables('triggerScheduleName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories', variables('dataFactoryName'))]",
+        "[resourceId('Microsoft.DataFactory/factories/pipelines', variables('dataFactoryName'), variables('pipelineName'))]"
+      ],
+      "properties": {
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+          "recurrence": {
+            "frequency": "Day",
+            "interval": 1,
+            "startTime": "2026-03-01T06:00:00Z",
+            "timeZone": "UTC",
+            "schedule": {
+              "minutes": [0],
+              "hours": [6]
+            }
+          }
+        },
+        "pipelines": [
+          {
+            "pipelineReference": {
+              "type": "PipelineReference",
+              "referenceName": "[variables('pipelineName')]"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "dataFactoryName": {
+      "type": "string",
+      "value": "[variables('dataFactoryName')]"
+    },
+    "principalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.DataFactory/factories', variables('dataFactoryName')), '2018-06-01', 'Full').identity.principalId]"
+    }
+  }
+}

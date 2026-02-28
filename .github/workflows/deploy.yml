@@ -1,0 +1,451 @@
+name: Build, Test & Deploy Olympic ETL
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_to_prod:
+        description: "Deploy to production"
+        required: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/olympic-etl
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_REGION: us-central1
+  ARTIFACT_REGISTRY: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/olympic-docker
+
+jobs:
+  # ========================================================================
+  # Code Quality & Static Analysis
+  # ========================================================================
+  quality:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r src/beam/requirements.txt
+          pip install pylint black mypy isort flake8
+
+      - name: Format check with black
+        run: black --check src/ tests/ || true
+
+      - name: Import sorting with isort
+        run: isort --check-only src/ tests/ || true
+
+      - name: Linting with pylint
+        run: |
+          pylint src/beam/pipelines/*.py --disable=all --enable=E,F \
+            || exit 0
+
+      - name: Type checking with mypy
+        run: |
+          mypy src/beam/pipelines/ --ignore-missing-imports \
+            || exit 0
+
+      - name: Security scanning with bandit
+        run: |
+          pip install bandit
+          bandit -r src/ -ll || exit 0
+
+  # ========================================================================
+  # Unit Tests
+  # ========================================================================
+  unit-tests:
+    name: Unit Tests & Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: quality
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r src/beam/requirements.txt
+          pip install pytest pytest-cov pytest-mock
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/unit/ \
+            --cov=src/beam \
+            --cov-report=xml \
+            --cov-report=html \
+            --cov-fail-under=75 \
+            -v
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          verbose: true
+
+      - name: Archive coverage reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: htmlcov/
+
+  # ========================================================================
+  # Integration Tests (BigQuery Sandbox)
+  # ========================================================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: unit-tests
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          export_default_credentials: true
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r src/beam/requirements.txt
+          pip install pytest pytest-mock google-cloud-bigquery
+
+      - name: Run integration tests
+        run: |
+          pytest tests/integration/ \
+            --timeout=600 \
+            -v \
+            -m "not slow"
+        env:
+          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: integration-test-results
+          path: test-results/
+
+  # ========================================================================
+  # Build Docker Image
+  # ========================================================================
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [unit-tests, integration-tests]
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GCP Artifact Registry
+        uses: docker/login-action@v2
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.ARTIFACT_REGISTRY }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+      - name: Archive Docker image metadata
+        uses: actions/upload-artifact@v3
+        with:
+          name: docker-image-metadata
+          path: |
+            image-tag.txt
+            image-digest.txt
+
+  # ========================================================================
+  # Deploy to GCP Staging
+  # ========================================================================
+  deploy-staging:
+    name: Deploy to Staging (GCP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    if: github.ref == 'refs/heads/develop'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          export_default_credentials: true
+
+      - name: Authenticate to GCP
+        run: |
+          gcloud auth activate-service-account --key-file=${{ secrets.GCP_SA_KEY }}
+
+      - name: Deploy Dataflow template
+        run: |
+          gcloud dataflow flex-template build \
+            gs://${{ env.GCP_PROJECT_ID }}-beam-templates/olympic-etl-staging \
+            --image-gcr-path="${{ env.ARTIFACT_REGISTRY }}/olympic-etl:latest" \
+            --sdk-language=PYTHON \
+            --flex-template-base-image=PYTHON3 \
+            --metadata-file=src/beam/templates/metadata.json \
+            --py-path=src/beam/pipelines
+
+      - name: Deploy to Cloud Run (API)
+        run: |
+          # Deploy validation API to Cloud Run
+          gcloud run deploy olympic-etl-api \
+            --image="${{ env.ARTIFACT_REGISTRY }}/olympic-etl:latest" \
+            --platform=managed \
+            --region=${{ env.GCP_REGION }} \
+            --allow-unauthenticated \
+            --set-env-vars="ENVIRONMENT=staging,GCP_PROJECT=${{ env.GCP_PROJECT_ID }}"
+
+      - name: Run smoke tests
+        run: |
+          API_URL=$(gcloud run services describe olympic-etl-api \
+            --platform=managed \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+          
+          echo "Testing API at: $API_URL"
+          curl -f "$API_URL/health" || exit 1
+
+      - name: Notify Slack (Staging)
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: "Staging deployment ${{ job.status }}"
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          fields: repo,message,commit,author
+
+  # ========================================================================
+  # Smoke Tests (Staging)
+  # ========================================================================
+  smoke-tests:
+    name: Smoke Tests (Staging)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/develop'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          pip install requests pytest
+
+      - name: Get staging API URL
+        id: staging-api
+        run: |
+          gcloud auth activate-service-account --key-file=${{ secrets.GCP_SA_KEY }}
+          gcloud config set project ${{ env.GCP_PROJECT_ID }}
+          API_URL=$(gcloud run services describe olympic-etl-api \
+            --platform=managed \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+          echo "url=$API_URL" >> $GITHUB_OUTPUT
+
+      - name: Run smoke tests
+        run: |
+          pytest tests/smoke/ \
+            --api-url=${{ steps.staging-api.outputs.url }} \
+            -v
+
+  # ========================================================================
+  # Deploy to Production
+  # ========================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: smoke-tests
+    if: github.ref == 'refs/heads/main' || github.event.inputs.deploy_to_prod == 'true'
+    environment:
+      name: production
+      url: https://console.cloud.google.com/dataflow
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_PROD_SA_KEY }}
+          project_id: ${{ secrets.GCP_PROD_PROJECT_ID }}
+
+      - name: Deploy Dataflow template (Prod)
+        run: |
+          gcloud dataflow flex-template build \
+            gs://${{ secrets.GCP_PROD_PROJECT_ID }}-beam-templates/olympic-etl-prod \
+            --image-gcr-path="us-central1-docker.pkg.dev/${{ secrets.GCP_PROD_PROJECT_ID }}/olympic-docker/olympic-etl:latest" \
+            --sdk-language=PYTHON \
+            --flex-template-base-image=PYTHON3
+
+      - name: Deploy Cloud Run (Prod)
+        run: |
+          gcloud run deploy olympic-etl-api \
+            --image="us-central1-docker.pkg.dev/${{ secrets.GCP_PROD_PROJECT_ID }}/olympic-docker/olympic-etl:latest" \
+            --platform=managed \
+            --region=${{ env.GCP_REGION }} \
+            --allow-unauthenticated \
+            --set-env-vars="ENVIRONMENT=production,GCP_PROJECT=${{ secrets.GCP_PROD_PROJECT_ID }}" \
+            --min-instances=2 \
+            --max-instances=10
+
+      - name: Create release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_id }}
+          release_name: Olympic ETL Release ${{ github.run_id }}
+          body: |
+            Production deployment completed.
+            
+            Docker Image: ${{ needs.build.outputs.image-tag }}
+            
+            Changes: ${{ github.event.pull_request.title }}
+          draft: false
+          prerelease: false
+
+      - name: Notify Success (Slack)
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          text: "Production deployment successful! 🚀"
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          fields: repo,message,commit,author,action
+
+  # ========================================================================
+  # Rollback Plan
+  # ========================================================================
+  rollback:
+    name: Rollback (Manual Trigger)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && contains(github.event.inputs.action, 'rollback')
+    environment:
+      name: production
+
+    steps:
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_PROD_SA_KEY }}
+          project_id: ${{ secrets.GCP_PROD_PROJECT_ID }}
+
+      - name: Get previous deployment
+        run: |
+          gcloud run revisions list --service=olympic-etl-api \
+            --region=${{ env.GCP_REGION }} \
+            --limit=2
+
+      - name: Rollback to previous revision
+        run: |
+          PREV_REVISION=$(gcloud run revisions list --service=olympic-etl-api \
+            --region=${{ env.GCP_REGION }} \
+            --limit=2 --format='value(name)' | tail -1)
+          
+          gcloud run services update-traffic olympic-etl-api \
+            --to-revisions=$PREV_REVISION=100 \
+            --region=${{ env.GCP_REGION }}
+
+      - name: Notify Slack (Rollback)
+        uses: 8398a7/action-slack@v3
+        with:
+          status: warning
+          text: "Production rollback completed"
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}

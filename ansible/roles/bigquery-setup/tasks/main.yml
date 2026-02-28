@@ -1,0 +1,170 @@
+---
+# BigQuery Setup Role
+# Creates datasets, tables, views, and clustering configuration
+
+- name: Create BigQuery dataset
+  google.cloud.gcp_bigquery_dataset:
+    name: "{{ gcp_dataset_name }}"
+    project: "{{ gcp_project_id }}"
+    description: "Olympic analytics dataset ({{ environment }})"
+    default_table_expiration: 7776000  # 90 days
+    location: "{{ gcp_region | upper }}"
+    state: present
+  register: bq_dataset
+
+- name: Define BigQuery schema
+  ansible.builtin.set_fact:
+    bigquery_schema:
+      - name: record_id
+        type: STRING
+        mode: REQUIRED
+        description: "Unique record identifier"
+      - name: athlete_id
+        type: STRING
+        mode: REQUIRED
+        description: "Athlete identifier"
+      - name: athlete_name
+        type: STRING
+        mode: NULLABLE
+        description: "Athlete name"
+      - name: event_id
+        type: STRING
+        mode: REQUIRED
+        description: "Event identifier"
+      - name: event_name
+        type: STRING
+        mode: NULLABLE
+        description: "Event name"
+      - name: country_code
+        type: STRING
+        mode: REQUIRED
+        description: "ISO 3166-1 alpha-3 country code"
+      - name: country_name
+        type: STRING
+        mode: NULLABLE
+        description: "Country name"
+      - name: region
+        type: STRING
+        mode: NULLABLE
+        description: "Geographic region"
+      - name: medal_type
+        type: STRING
+        mode: REQUIRED
+        description: "GOLD, SILVER, or BRONZE"
+      - name: year
+        type: INTEGER
+        mode: REQUIRED
+        description: "Olympic year"
+      - name: season
+        type: STRING
+        mode: NULLABLE
+        description: "Summer or Winter"
+      - name: city
+        type: STRING
+        mode: NULLABLE
+        description: "Host city"
+      - name: processed_at
+        type: TIMESTAMP
+        mode: NULLABLE
+        description: "Processing timestamp (partitioning key)"
+      - name: enriched_at
+        type: TIMESTAMP
+        mode: NULLABLE
+        description: "Enrichment timestamp"
+
+- name: Create medals table
+  google.cloud.gcp_bigquery_table:
+    name: "{{ gcp_bigquery_table }}"
+    dataset_name: "{{ gcp_dataset_name }}"
+    project: "{{ gcp_project_id }}"
+    schema: "{{ bigquery_schema }}"
+    state: present
+    time_partitioning:
+      type: DAY
+      field: processed_at
+    clustering:
+      fields:
+        - country_code
+        - year
+    description: "Olympic medal records"
+  register: bq_table
+
+- name: Create materialized view - daily medal counts
+  ansible.builtin.shell: |
+    bq query --use_legacy_sql=false --replace \
+      --destination_table={{ gcp_dataset_name }}.daily_medal_counts \
+      --display_name="Daily Medal Counts" << EOF
+    SELECT
+      date(processed_at) as medal_date,
+      country_code,
+      country_name,
+      COUNTIF(medal_type = 'GOLD') as gold_count,
+      COUNTIF(medal_type = 'SILVER') as silver_count,
+      COUNTIF(medal_type = 'BRONZE') as bronze_count,
+      COUNT(*) as total_medals
+    FROM
+      \`{{ gcp_project_id }}.{{ gcp_dataset_name }}.{{ gcp_bigquery_table }}\`
+    WHERE
+      processed_at >= DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY)
+    GROUP BY
+      medal_date, country_code, country_name
+    EOF
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+  changed_when: false
+
+- name: Create materialized view - athlete totals
+  ansible.builtin.shell: |
+    bq query --use_legacy_sql=false --replace \
+      --destination_table={{ gcp_dataset_name }}.athlete_totals \
+      --display_name="Athlete Totals" << EOF
+    SELECT
+      athlete_id,
+      athlete_name,
+      country_code,
+      COUNTIF(medal_type = 'GOLD') as gold_medals,
+      COUNTIF(medal_type = 'SILVER') as silver_medals,
+      COUNTIF(medal_type = 'BRONZE') as bronze_medals,
+      COUNT(*) as total_medals,
+      COUNT(DISTINCT year) as olympics_count
+    FROM
+      \`{{ gcp_project_id }}.{{ gcp_dataset_name }}.{{ gcp_bigquery_table }}\`
+    GROUP BY
+      athlete_id, athlete_name, country_code
+    HAVING
+      COUNT(*) >= 1
+    EOF
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+  changed_when: false
+
+- name: Verify table creation
+  ansible.builtin.shell: |
+    bq show --format=prettyjson {{ gcp_dataset_name }}.{{ gcp_bigquery_table }} | grep -q "{{ gcp_bigquery_table }}"
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+  changed_when: false
+  register: table_check
+
+- name: BigQuery Setup Summary
+  ansible.builtin.debug:
+    msg: |
+      ========================================
+      BigQuery Setup Completed
+      ========================================
+      Dataset: {{ gcp_dataset_name }}
+      Region: {{ gcp_region | upper }}
+      
+      Tables Created: 1
+        - medals (650M+ rows)
+          - Partitioned: by processed_at (daily)
+          - Clustered: by country_code, year
+          
+      Materialized Views: 2
+        - daily_medal_counts
+        - athlete_totals
+      
+      Sample Query:
+        SELECT COUNT(*) FROM {{ gcp_dataset_name }}.medals
+      
+      ========================================

@@ -1,0 +1,147 @@
+---
+# GCP Setup Role
+# Configures GCP project, service accounts, APIs, and IAM roles
+
+- name: Enable required GCP APIs
+  google.cloud.gcp_compute_project_info:
+    project: "{{ gcp_project_id }}"
+    service_list:
+      - dataflow.googleapis.com
+      - bigquery.googleapis.com
+      - storage-api.googleapis.com
+      - cloudlogging.googleapis.com
+      - monitoring.googleapis.com
+      - artifactregistry.googleapis.com
+      - iam.googleapis.com
+      - cloudscheduler.googleapis.com
+      - pubsub.googleapis.com
+  register: gcp_project_info
+
+- name: Create service account
+  google.cloud.gcp_iam_service_account:
+    name: "{{ gcp_service_account_name }}"
+    display_name: "Olympic ETL Service Account ({{ environment }})"
+    project: "{{ gcp_project_id }}"
+    state: present
+  register: gcp_service_account
+
+- name: Set service account email
+  ansible.builtin.set_fact:
+    gcp_service_account_email: "{{ gcp_service_account.email }}"
+
+- name: Create service account key
+  google.cloud.gcp_iam_service_account_key:
+    service_account_name: "{{ gcp_service_account.name }}"
+    project: "{{ gcp_project_id }}"
+    state: present
+    public_key_type: TYPE_X509_PEM
+  register: gcp_service_account_key
+
+- name: Save service account key to file
+  ansible.builtin.copy:
+    content: "{{ gcp_service_account_key.private_key }}"
+    dest: "{{ ansible_env.HOME }}/.config/gcloud/olympic-etl-{{ environment }}-key.json"
+    mode: '0600'
+  register: sa_key_file
+
+- name: Grant Dataflow Worker role
+  google.cloud.gcp_iam_role:
+    name: "{{ gcp_service_account_email }}"
+    project: "{{ gcp_project_id }}"
+    role: roles/dataflow.worker
+    state: present
+
+- name: Grant BigQuery Editor role
+  google.cloud.gcp_iam_role:
+    name: "{{ gcp_service_account_email }}"
+    project: "{{ gcp_project_id }}"
+    role: roles/bigquery.dataEditor
+    state: present
+
+- name: Grant Storage Admin role
+  google.cloud.gcp_iam_role:
+    name: "{{ gcp_service_account_email }}"
+    project: "{{ gcp_project_id }}"
+    role: roles/storage.objectAdmin
+    state: present
+
+- name: Grant Cloud Logging Log Writer role
+  google.cloud.gcp_iam_role:
+    name: "{{ gcp_service_account_email }}"
+    project: "{{ gcp_project_id }}"
+    role: roles/logging.logWriter
+    state: present
+
+- name: Grant Cloud Monitoring Metric Writer role
+  google.cloud.gcp_iam_role:
+    name: "{{ gcp_service_account_email }}"
+    project: "{{ gcp_project_id }}"
+    role: roles/monitoring.metricWriter
+    state: present
+
+- name: Create Cloud Storage buckets
+  google.cloud.gcp_storage_bucket:
+    name: "{{ item }}"
+    project: "{{ gcp_project_id }}"
+    location: "{{ gcp_region | upper }}"
+    state: present
+  loop:
+    - "{{ gcp_bucket_input }}"
+    - "{{ gcp_bucket_temp }}"
+    - "{{ gcp_bucket_dlq }}"
+    - "{{ gcp_bucket_output }}"
+  register: storage_buckets
+
+- name: Set DLQ lifecycle policy
+  ansible.builtin.shell: |
+    cat > /tmp/lifecycle.json << EOF
+    {
+      "lifecycle": {
+        "rule": [
+          {
+            "action": {"type": "Delete"},
+            "condition": {"age": 30}
+          }
+        ]
+      }
+    }
+    EOF
+    gsutil lifecycle set /tmp/lifecycle.json gs://{{ gcp_bucket_dlq }}
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+  changed_when: false
+
+- name: Enable versioning on backup buckets
+  ansible.builtin.shell: |
+    gsutil versioning set on gs://{{ item }}
+  loop:
+    - "{{ gcp_bucket_input }}"
+    - "{{ gcp_bucket_output }}"
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+  changed_when: false
+
+- name: GCP Setup Summary
+  ansible.builtin.debug:
+    msg: |
+      ========================================
+      GCP Setup Completed
+      ========================================
+      Service Account: {{ gcp_service_account_email }}
+      Key File: {{ sa_key_file.dest }}
+      
+      APIs Enabled: 9
+      Storage Buckets: 4
+        - {{ gcp_bucket_input }} (input)
+        - {{ gcp_bucket_temp }} (temp)
+        - {{ gcp_bucket_dlq }} (DLQ - auto-delete 30d)
+        - {{ gcp_bucket_output }} (output)
+      
+      IAM Roles: 5
+        - Dataflow Worker
+        - BigQuery Editor
+        - Storage Admin
+        - Cloud Logging Writer
+        - Cloud Monitoring Writer
+      
+      ========================================

@@ -1,0 +1,113 @@
+version: '3.9'
+
+services:
+  # BigQuery Emulator for local testing
+  bigquery-emulator:
+    image: ghcr.io/goccy/bigquery-emulator:0.4.3
+    container_name: bigquery-emulator
+    ports:
+      - "9050:9050"
+    environment:
+      - GRPC_PORT=9050
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9050/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for metadata storage
+  postgres:
+    image: postgres:16-alpine
+    container_name: olympic-postgres
+    environment:
+      POSTGRES_DB: olympic_metadata
+      POSTGRES_USER: olympic_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U olympic_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: olympic-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: olympic-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: olympic-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+
+  # Jaeger for distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: olympic-jaeger
+    ports:
+      - "6831:6831/udp"
+      - "16686:16686"
+    environment:
+      COLLECTOR_ZIPKIN_HOST_PORT: ":9411"
+
+  # Minio for local S3-compatible storage
+  minio:
+    image: minio/minio:latest
+    container_name: olympic-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio_data:/minio_data
+    command: server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+  minio_data:
+
+networks:
+  default:
+    name: olympic-network

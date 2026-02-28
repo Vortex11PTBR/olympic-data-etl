@@ -1,0 +1,23 @@
+# Ansible Requirements
+# Install with: ansible-galaxy install -r requirements.yml
+
+collections:
+  - name: google.cloud
+    version: ">=1.14.0"
+  - name: azure.azcollection
+    version: ">=1.18.0"
+  - name: community.general
+    version: ">=7.4.0"
+  - name: community.docker
+    version: ">=5.3.0"
+
+roles:
+  - name: geerlingguy.python
+    src: https://github.com/geerlingguy/ansible-role-python.git
+    scm: git
+    version: master
+
+  - name: geerlingguy.docker
+    src: https://github.com/geerlingguy/ansible-role-docker.git
+    scm: git
+    version: master

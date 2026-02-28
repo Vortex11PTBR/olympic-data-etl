@@ -1,0 +1,126 @@
+---
+# Monitoring and Verification Playbook
+# Usage: ansible-playbook -i ansible/inventory/hosts.yml ansible/playbooks/verify.yml -e "environment=dev"
+
+- name: Verify Olympic Data ETL Deployment
+  hosts: localhost
+  gather_facts: true
+  
+  tasks:
+    - name: Verify GCP authentication
+      ansible.builtin.shell: |
+        gcloud auth list --filter=status:ACTIVE --format='value(account)'
+      register: gcp_account
+      changed_when: false
+    
+    - name: Verify GCP project
+      ansible.builtin.shell: |
+        gcloud config get-value project
+      register: gcp_project
+      changed_when: false
+    
+    - name: Verify BigQuery dataset exists
+      ansible.builtin.shell: |
+        bq ls -d --project_id={{ gcp_project_id }} | grep {{ gcp_dataset_name }}
+      environment:
+        GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+      register: bq_dataset_check
+      changed_when: false
+      failed_when: false
+    
+    - name: Check BigQuery tables
+      ansible.builtin.shell: |
+        bq ls -t --project_id={{ gcp_project_id }} {{ gcp_dataset_name }}
+      environment:
+        GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+      register: bq_tables
+      changed_when: false
+      failed_when: false
+    
+    - name: Verify storage buckets
+      ansible.builtin.shell: |
+        gsutil ls -b | grep -E "({{ gcp_bucket_input }}|{{ gcp_bucket_temp }}|{{ gcp_bucket_dlq }}|{{ gcp_bucket_output }})"
+      environment:
+        GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+      register: storage_check
+      changed_when: false
+    
+    - name: Check Dataflow templates
+      ansible.builtin.shell: |
+        gsutil ls {{ dataflow_template_path }} 2>/dev/null | head -5
+      environment:
+        GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+      register: dataflow_check
+      changed_when: false
+      failed_when: false
+    
+    - name: Check Docker daemon
+      community.docker.docker_host_info:
+      register: docker_info
+      failed_when: false
+      ignore_errors: true
+    
+    - name: Check Docker images
+      community.docker.docker_image_info:
+        name: "{{ gcp_region }}-docker.pkg.dev/{{ gcp_project_id }}/olympic-docker/olympic-etl"
+      register: docker_images
+      failed_when: false
+      ignore_errors: true
+    
+    - name: Comprehensive Verification Report
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Olympic Data ETL Verification Report
+          ========================================
+          
+          GCP Setup:
+            Status: {% if gcp_account.stdout %}✓ CONFIGURED{% else %}✗ NOT CONFIGURED{% endif %}
+            Account: {{ gcp_account.stdout | default('N/A') }}
+            Project: {{ gcp_project_id }}
+          
+          BigQuery:
+            Dataset: {% if bq_dataset_check.rc == 0 %}✓ EXISTS{% else %}✗ MISSING{% endif %} ({{ gcp_dataset_name }})
+            Tables: {{ bq_tables.stdout_lines | length | default(0) }} found
+          
+          Cloud Storage:
+            Buckets: {% if storage_check.rc == 0 %}✓ ALL FOUND{% else %}✗ SOME MISSING{% endif %}
+            - Input: {{ gcp_bucket_input }}
+            - Temp: {{ gcp_bucket_temp }}
+            - DLQ: {{ gcp_bucket_dlq }}
+            - Output: {{ gcp_bucket_output }}
+          
+          Dataflow:
+            Template: {% if dataflow_check.rc == 0 %}✓ DEPLOYED{% else %}✗ NOT DEPLOYED{% endif %}
+            Path: {{ dataflow_template_path }}
+          
+          Docker:
+            Status: {% if docker_info.exists %}✓ RUNNING{% else %}✗ NOT RUNNING{% endif %}
+            Images: {{ docker_images.images | length | default(0) }} found
+          
+          Deployment Summary:
+            Environment: {{ environment }}
+            Region: {{ gcp_region }}
+            Service Account: {{ gcp_service_account_email }}
+            Deployment Date: {{ ansible_date_time.iso8601 }}
+          
+          Recommendations:
+            {% if gcp_account.stdout %}
+            ✓ GCP authentication ready
+            {% else %}
+            ✗ Run: gcloud auth login
+            {% endif %}
+            
+            {% if bq_dataset_check.rc == 0 %}
+            ✓ BigQuery dataset exists
+            {% else %}
+            ✗ Re-run: ansible-playbook deploy.yml
+            {% endif %}
+            
+            {% if docker_info.exists %}
+            ✓ Docker is running
+            {% else %}
+            ✗ Run: docker-compose up -d
+            {% endif %}
+          
+          ========================================

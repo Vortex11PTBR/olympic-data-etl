@@ -1,0 +1,62 @@
+# Olympic Data ETL - Root Requirements
+# Core dependencies for the entire project
+
+# Data Processing & ETL
+apache-beam[gcp]==2.54.0
+google-cloud-bigquery==3.17.1
+google-cloud-storage==2.10.0
+google-cloud-dataflow==2.54.0
+google-cloud-monitoring==2.16.1
+
+# Data Quality & Validation
+great-expectations==0.18.4
+pandas==2.1.4
+pyarrow==15.0.0
+
+# APIs & HTTP
+requests==2.31.0
+httpx==0.25.2
+
+# Database & ORM
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+
+# Cloud & Infrastructure
+google-auth==2.27.0
+google-cloud-logging==3.8.0
+azure-storage-blob==12.19.0
+azure-identity==1.15.0
+azure-mgmt-datafactory==3.3.1
+
+# Configuration & Environment
+python-dotenv==1.0.0
+pydantic==2.5.3
+pyyaml==6.0.1
+
+# Logging & Monitoring
+structlog==24.1.0
+python-json-logger==2.0.7
+
+# Testing
+pytest==7.4.3
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+pytest-timeout==2.2.0
+
+# Code Quality
+pylint==3.0.3
+black==23.12.1
+mypy==1.7.1
+isort==5.13.2
+flake8==6.1.0
+bandit==1.7.5
+
+# Utilities
+click==8.1.7
+tqdm==4.66.1
+pyspark==3.5.0
+
+# Development
+ipython==8.18.1
+jupyter==1.0.0
+notebook==7.0.6

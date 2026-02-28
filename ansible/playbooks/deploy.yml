@@ -1,0 +1,82 @@
+---
+# Main Deployment Playbook for Olympic Data ETL
+# Usage: 
+#   ansible-playbook -i ansible/inventory/hosts.yml ansible/playbooks/deploy.yml -e "environment=dev"
+#   ansible-playbook -i ansible/inventory/hosts.yml ansible/playbooks/deploy.yml -e "environment=prod"
+
+- name: Deploy Olympic Data ETL
+  hosts: localhost
+  gather_facts: true
+  become: false
+  
+  pre_tasks:
+    - name: Validate environment
+      ansible.builtin.assert:
+        that:
+          - environment in ['dev', 'staging', 'prod']
+        fail_msg: "Environment must be dev, staging, or prod"
+    
+    - name: Display deployment info
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Olympic Data ETL Deployment
+          ========================================
+          Environment: {{ environment }}
+          GCP Project: {{ gcp_project_id }}
+          Region: {{ gcp_region }}
+          Date: {{ ansible_date_time.iso8601 }}
+          ========================================
+  
+  roles:
+    - role: gcp-setup
+      tags: ["gcp", "setup"]
+    
+    - role: bigquery-setup
+      tags: ["gcp", "bigquery"]
+    
+    - role: dataflow-deploy
+      tags: ["gcp", "dataflow"]
+    
+    - role: docker-setup
+      tags: ["docker"]
+  
+  post_tasks:
+    - name: Deployment Summary
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Deployment Completed Successfully!
+          ========================================
+          
+          GCP Resources:
+            Service Account: {{ gcp_service_account_email }}
+            BigQuery Dataset: {{ gcp_dataset_name }}
+            Storage Buckets: 4 created
+            
+          Dataflow:
+            Template: {{ dataflow_template_path }}
+            Workers: {{ dataflow_workers }}-{{ dataflow_max_workers }}
+            
+          Next Steps:
+            1. Verify resources in GCP Console
+            2. Run pipeline: python -m src.beam.pipelines.olympic_etl_pipeline --project={{ gcp_project_id }} --runner=DataflowRunner
+            3. Monitor: gcloud dataflow jobs list --region={{ gcp_region }}
+            4. Check data: bq query --use_legacy_sql=false 'SELECT COUNT(*) FROM {{ gcp_dataset_name }}.medals'
+          
+          ========================================
+    
+    - name: Send Slack notification
+      ansible.builtin.uri:
+        url: "{{ slack_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          text: "✅ Olympic ETL deployed to {{ environment }}"
+          blocks:
+            - type: "section"
+              text:
+                type: "mrkdwn"
+                text: "*Olympic ETL Deployment Successful* 🚀\n*Environment*: {{ environment }}\n*Project*: {{ gcp_project_id }}\n*Time*: {{ ansible_date_time.iso8601 }}"
+      when: slack_webhook_url | length > 0
+      ignore_errors: true

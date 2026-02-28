@@ -1,0 +1,6 @@
+athlete_id,name,country,sport,medal,year,_processed_at,_pipeline_version,_environment,medal_rank
+1,Simone Biles,USA,Gymnastics,Gold,2020,2026-02-28T17:44:38.547110,1.0.0,local,1
+2,Nadia Comaneci,Romania,Gymnastics,Gold,1976,2026-02-28T17:44:38.547110,1.0.0,local,1
+3,Usain Bolt,Jamaica,Track and Field,Gold,2016,2026-02-28T17:44:38.547110,1.0.0,local,1
+4,Michael Phelps,USA,Swimming,Gold,2012,2026-02-28T17:44:38.547110,1.0.0,local,1
+5,Serena Williams,USA,Tennis,Gold,2012,2026-02-28T17:44:38.547110,1.0.0,local,1

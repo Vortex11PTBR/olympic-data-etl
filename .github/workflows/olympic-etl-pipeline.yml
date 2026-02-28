@@ -1,0 +1,85 @@
+name: Olympic ETL Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  schedule:
+    - cron: '0 2 * * *'  # Rodar diariamente às 2AM UTC
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-local.txt
+    
+    - name: Run ETL Pipeline
+      run: |
+        python src/beam/pipelines/olympic_etl_simple.py my-olympic-etl
+    
+    - name: Export Data
+      run: |
+        python src/beam/pipelines/data_export.py
+    
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: olympic-data
+        path: output/
+        retention-days: 30
+
+  bigquery-load:
+    needs: validate-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+      with:
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        project_id: my-olympic-etl
+        export_default_credentials: true
+    
+    - name: Download Artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: olympic-data
+        path: output/
+    
+    - name: Load to BigQuery
+      run: |
+        bq load --autodetect --source_format=CSV \
+          olympics_dataset.athletes \
+          output/athletes.csv
+    
+    - name: Verify Load
+      run: |
+        bq query --use_legacy_sql=false \
+          'SELECT COUNT(*) as total FROM `my-olympic-etl.olympics_dataset.athletes`'
+
+  notify:
+    needs: [validate-and-test, bigquery-load]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Job Status
+      run: |
+        if [ "${{ needs.validate-and-test.result }}" == "success" ]; then
+          echo "✅ ETL Pipeline: SUCCESS"
+        else
+          echo "❌ ETL Pipeline: FAILED"
+        fi

@@ -1,0 +1,34 @@
+============================================================
+OLYMPIC DATA - STATISTICAL REPORT
+============================================================
+
+Generated: 2026-02-28T14:50:11.458367
+Total Records: 5
+
+MEDALS DISTRIBUTION:
+----------------------------------------
+  Gold: 5 (100.0%)
+
+COUNTRIES: 3
+----------------------------------------
+  Jamaica: 1 athletes
+  Romania: 1 athletes
+  USA: 3 athletes
+
+SPORTS: 4
+----------------------------------------
+  Gymnastics: 2 athletes
+  Swimming: 1 athletes
+  Tennis: 1 athletes
+  Track and Field: 1 athletes
+
+YEARS: 4
+----------------------------------------
+  1976: 1 athletes
+  2012: 2 athletes
+  2016: 1 athletes
+  2020: 1 athletes
+
+============================================================
+END OF REPORT
+============================================================

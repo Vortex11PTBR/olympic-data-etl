@@ -1,0 +1,128 @@
+---
+# Dataflow Deploy Role
+# Builds and deploys Beam templates to Google Cloud Dataflow
+
+- name: Check if Dataflow template exists
+  ansible.builtin.shell: |
+    gsutil ls {{ dataflow_template_path }} 2>/dev/null | grep -q metadata.json
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+  register: template_check
+  changed_when: false
+  failed_when: false
+
+- name: Display build status
+  ansible.builtin.debug:
+    msg: "Building new Dataflow template at {{ dataflow_template_path }}"
+
+- name: Create Artifact Registry repository
+  ansible.builtin.shell: |
+    gcloud artifacts repositories create olympic-docker \
+      --repository-format=docker \
+      --location={{ gcp_region }} \
+      --project={{ gcp_project_id }} 2>/dev/null || true
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+  changed_when: false
+
+- name: Authenticate Docker for Artifact Registry
+  ansible.builtin.shell: |
+    gcloud auth configure-docker {{ gcp_region }}-docker.pkg.dev \
+      --quiet
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+  changed_when: false
+
+- name: Build Docker image
+  ansible.builtin.shell: |
+    docker build \
+      -f docker/Dockerfile \
+      -t {{ gcp_region }}-docker.pkg.dev/{{ gcp_project_id }}/olympic-docker/olympic-etl:{{ environment }} \
+      -t {{ gcp_region }}-docker.pkg.dev/{{ gcp_project_id }}/olympic-docker/olympic-etl:latest \
+      .
+  environment:
+    DOCKER_BUILDKIT: "1"
+  register: docker_build_result
+  changed_when: "'successfully' in docker_build_result.stdout"
+
+- name: Push Docker image to Artifact Registry
+  ansible.builtin.shell: |
+    docker push {{ gcp_region }}-docker.pkg.dev/{{ gcp_project_id }}/olympic-docker/olympic-etl:{{ environment }}
+    docker push {{ gcp_region }}-docker.pkg.dev/{{ gcp_project_id }}/olympic-docker/olympic-etl:latest
+  register: docker_push_result
+  changed_when: "'Pushed' in docker_push_result.stderr"
+
+- name: Build Dataflow Flex Template
+  ansible.builtin.shell: |
+    gcloud dataflow flex-template build {{ dataflow_template_path }} \
+      --image-gcr-path={{ gcp_region }}-docker.pkg.dev/{{ gcp_project_id }}/olympic-docker/olympic-etl:{{ environment }} \
+      --sdk-language=PYTHON \
+      --flex-template-base-image=PYTHON3 \
+      --project={{ gcp_project_id }}
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+  register: template_build
+  changed_when: true
+
+- name: Create deployment manifest
+  ansible.builtin.copy:
+    content: |
+      {
+        "template_name": "olympic-etl-{{ environment }}",
+        "template_path": "{{ dataflow_template_path }}",
+        "image": "{{ gcp_region }}-docker.pkg.dev/{{ gcp_project_id }}/olympic-docker/olympic-etl:{{ environment }}",
+        "deployed_at": "{{ ansible_date_time.iso8601 }}",
+        "environment": "{{ environment }}",
+        "gcp_project": "{{ gcp_project_id }}",
+        "gcp_region": "{{ gcp_region }}",
+        "dataset": "{{ gcp_dataset_name }}",
+        "workers": "{{ dataflow_workers }} - {{ dataflow_max_workers }}"
+      }
+    dest: "{{ playbook_dir }}/../manifests/dataflow-{{ environment }}-manifest.json"
+  delegate_to: localhost
+
+- name: Create Cloud Scheduler job (daily trigger)
+  ansible.builtin.shell: |
+    gcloud scheduler jobs create pubsub olympic-etl-{{ environment }}-daily \
+      --location={{ gcp_region }} \
+      --schedule="0 6 * * *" \
+      --topic=olympic-etl-trigger-{{ environment }} \
+      --message-body='{"environment":"{{ environment }}","trigger":"scheduled"}' \
+      --project={{ gcp_project_id }} 2>/dev/null || \
+    gcloud scheduler jobs update pubsub olympic-etl-{{ environment }}-daily \
+      --location={{ gcp_region }} \
+      --schedule="0 6 * * *" \
+      --topic=olympic-etl-trigger-{{ environment }} \
+      --message-body='{"environment":"{{ environment }}","trigger":"scheduled"}' \
+      --project={{ gcp_project_id }}
+  environment:
+    GOOGLE_APPLICATION_CREDENTIALS: "{{ sa_key_file.dest }}"
+  changed_when: false
+
+- name: Dataflow Deployment Summary
+  ansible.builtin.debug:
+    msg: |
+      ========================================
+      Dataflow Deployment Completed
+      ========================================
+      
+      Template Information:
+        Name: olympic-etl-{{ environment }}
+        Path: {{ dataflow_template_path }}
+        Image: {{ gcp_region }}-docker.pkg.dev/{{ gcp_project_id }}/olympic-docker/olympic-etl:{{ environment }}
+      
+      Configuration:
+        Workers: {{ dataflow_workers }} - {{ dataflow_max_workers }}
+        Machine Type: {{ dataflow_machine_type }}
+        Region: {{ gcp_region }}
+      
+      Scheduling:
+        Trigger: Daily at 6 AM UTC
+        Topic: olympic-etl-trigger-{{ environment }}
+      
+      Next Steps:
+        1. Test template: gcloud dataflow flex-template run test-job --template-file-gcs-location={{ dataflow_template_path }} --region={{ gcp_region }} --project={{ gcp_project_id }}
+        2. Monitor jobs: https://console.cloud.google.com/dataflow/jobs/{{ gcp_region }}
+        3. View logs: gcloud logging read "resource.type=dataflow_step"
+      
+      ========================================

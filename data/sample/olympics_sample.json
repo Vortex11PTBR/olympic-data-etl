@@ -1,0 +1,42 @@
+[
+  {
+    "athlete_id": "1",
+    "name": "Simone Biles",
+    "country": "USA",
+    "sport": "Gymnastics",
+    "medal": "Gold",
+    "year": 2020
+  },
+  {
+    "athlete_id": "2",
+    "name": "Nadia Comaneci",
+    "country": "Romania",
+    "sport": "Gymnastics",
+    "medal": "Gold",
+    "year": 1976
+  },
+  {
+    "athlete_id": "3",
+    "name": "Usain Bolt",
+    "country": "Jamaica",
+    "sport": "Track and Field",
+    "medal": "Gold",
+    "year": 2016
+  },
+  {
+    "athlete_id": "4",
+    "name": "Michael Phelps",
+    "country": "USA",
+    "sport": "Swimming",
+    "medal": "Gold",
+    "year": 2012
+  },
+  {
+    "athlete_id": "5",
+    "name": "Serena Williams",
+    "country": "USA",
+    "sport": "Tennis",
+    "medal": "Gold",
+    "year": 2012
+  }
+]

@@ -1,0 +1,195 @@
+---
+# Docker Setup Role
+# Sets up Docker and Docker Compose for local development
+
+- name: Install Python 3
+  ansible.builtin.package:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+    state: present
+  become: true
+  when: ansible_os_family in ["Debian", "RedHat"]
+
+- name: Install Docker (Ubuntu/Debian)
+  block:
+    - name: Add Docker GPG key
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      become: true
+
+    - name: Add Docker repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+      become: true
+
+    - name: Install Docker
+      ansible.builtin.package:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+      become: true
+
+  when: ansible_os_family == "Debian"
+
+- name: Install Docker (RedHat/CentOS)
+  block:
+    - name: Install Docker
+      ansible.builtin.package:
+        name:
+          - docker
+          - docker-compose
+        state: present
+      become: true
+
+  when: ansible_os_family == "RedHat"
+
+- name: Start and enable Docker
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true
+
+- name: Add user to docker group
+  ansible.builtin.user:
+    name: "{{ ansible_user_id }}"
+    groups: docker
+    append: true
+  become: true
+
+- name: Create project directories
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - data/sample
+    - logs
+    - manifests
+
+- name: Pull Docker images for docker-compose
+  ansible.builtin.shell: |
+    docker-compose -f docker/docker-compose.yml pull
+  register: docker_pull
+  changed_when: "'Downloaded' in docker_pull.stderr or 'Already' in docker_pull.stderr"
+
+- name: Create docker-compose override file
+  ansible.builtin.copy:
+    content: |
+      # Docker Compose Override for {{ environment }} environment
+      version: '3.9'
+      services:
+        postgres:
+          environment:
+            POSTGRES_PASSWORD: "{{ postgres_password | default('postgres') }}"
+        grafana:
+          environment:
+            GF_SECURITY_ADMIN_PASSWORD: "{{ grafana_password | default('admin') }}"
+    dest: "{{ playbook_dir }}/../docker/docker-compose.override.yml"
+
+- name: Environment setup instructions
+  ansible.builtin.copy:
+    content: |
+      # Olympic Data ETL - Local Development Setup
+      
+      ## Docker Services
+      
+      Start all services:
+        docker-compose -f docker/docker-compose.yml up -d
+      
+      View logs:
+        docker-compose -f docker/docker-compose.yml logs -f [service_name]
+      
+      Stop services:
+        docker-compose -f docker/docker-compose.yml down
+      
+      ## Access Points
+      
+      - BigQuery Emulator: http://localhost:9050
+      - PostgreSQL: localhost:5432 (olympic_user / postgres)
+      - Redis: localhost:6379
+      - Prometheus: http://localhost:9090
+      - Grafana: http://localhost:3000 (admin / admin)
+      - Jaeger: http://localhost:16686
+      - MinIO: http://localhost:9001
+      
+      ## Python Environment
+      
+      Create virtual environment:
+        python3 -m venv venv
+        source venv/bin/activate
+      
+      Install dependencies:
+        pip install -r requirements.txt
+        pip install -r src/beam/requirements.txt
+      
+      ## Running Tests
+      
+      Run all tests:
+        pytest tests/ --cov=src/beam
+      
+      Run specific test:
+        pytest tests/unit/test_pipeline.py -v
+      
+      ## Running Pipeline
+      
+      Local (DirectRunner):
+        python -m src.beam.pipelines.olympic_etl_pipeline \
+          --project=test-project \
+          --runner=DirectRunner \
+          --input-file=data/sample/olympics_sample.json
+    dest: "{{ playbook_dir }}/../DOCKER_SETUP.md"
+
+- name: Docker Setup Summary
+  ansible.builtin.debug:
+    msg: |
+      ========================================
+      Docker Setup Completed
+      ========================================
+      
+      Installed:
+        ✓ Docker CE
+        ✓ Docker Buildx
+        ✓ Docker Compose
+        ✓ Python 3
+      
+      Docker Images Available:
+        - ghcr.io/goccy/bigquery-emulator:0.4.3
+        - postgres:16-alpine
+        - redis:7-alpine
+        - prom/prometheus:latest
+        - grafana/grafana:latest
+        - jaegertracing/all-in-one:latest
+        - minio/minio:latest
+      
+      Start services:
+        docker-compose -f docker/docker-compose.yml up -d
+      
+      View status:
+        docker-compose -f docker/docker-compose.yml ps
+      
+      Access Points:
+        - Prometheus: http://localhost:9090
+        - Grafana: http://localhost:3000
+        - Jaeger: http://localhost:16686
+        - MinIO: http://localhost:9001
+      
+      Next Steps:
+        1. Start Docker services
+        2. Create Python virtual environment
+        3. Install dependencies
+        4. Run tests
+        5. Start local pipeline
+      
+      Documentation: See DOCKER_SETUP.md
+      
+      ========================================

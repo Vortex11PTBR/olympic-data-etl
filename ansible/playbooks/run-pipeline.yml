@@ -1,0 +1,122 @@
+---
+# Dataflow Job Execution Playbook
+# Usage: ansible-playbook -i ansible/inventory/hosts.yml ansible/playbooks/run-pipeline.yml -e "environment=dev"
+
+- name: Run Olympic Data ETL Pipeline
+  hosts: localhost
+  gather_facts: true
+  
+  vars:
+    runner_type: "{{ runner_type | default('DataflowRunner') }}"
+    job_timeout: "{{ job_timeout | default('1800') }}"  # 30 minutes
+    parallelism: "{{ parallelism | default('10') }}"
+  
+  tasks:
+    - name: Display pipeline configuration
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Running Olympic ETL Pipeline
+          ========================================
+          Runner: {{ runner_type }}
+          Project: {{ gcp_project_id }}
+          Region: {{ gcp_region }}
+          Dataset: {{ gcp_dataset_name }}
+          Timeout: {{ job_timeout }}s
+          Parallelism: {{ parallelism }}
+          ========================================
+    
+    - name: Check GCP authentication
+      ansible.builtin.shell: |
+        gcloud auth list --filter=status:ACTIVE
+      register: gcp_auth
+      changed_when: false
+    
+    - name: Set up environment variables
+      ansible.builtin.set_fact:
+        pipeline_env:
+          GCP_PROJECT_ID: "{{ gcp_project_id }}"
+          GCP_REGION: "{{ gcp_region }}"
+          GOOGLE_APPLICATION_CREDENTIALS: "{{ google_application_credentials_path | default('/root/.config/gcloud/application_default_credentials.json') }}"
+    
+    - name: Run DirectRunner (Local Testing)
+      ansible.builtin.shell: |
+        python -m src.beam.pipelines.olympic_etl_pipeline \
+          --project={{ gcp_project_id }} \
+          --region={{ gcp_region }} \
+          --dataset={{ gcp_dataset_name }} \
+          --table={{ gcp_bigquery_table }} \
+          --runner=DirectRunner \
+          --input-file=data/sample/olympics_sample.json \
+          --job_timeout={{ job_timeout }}
+      environment: "{{ pipeline_env }}"
+      when: runner_type == 'DirectRunner'
+      register: pipeline_result
+      changed_when: "'successfully' in pipeline_result.stdout"
+    
+    - name: Submit DataflowRunner Job
+      ansible.builtin.shell: |
+        python -m src.beam.pipelines.olympic_etl_pipeline \
+          --project={{ gcp_project_id }} \
+          --region={{ gcp_region }} \
+          --dataset={{ gcp_dataset_name }} \
+          --table={{ gcp_bigquery_table }} \
+          --runner=DataflowRunner \
+          --num_workers={{ dataflow_workers }} \
+          --max_num_workers={{ dataflow_max_workers }} \
+          --machine_type={{ dataflow_machine_type }} \
+          --job_name=olympic-etl-{{ environment }}-{{ now(utc=true, fmt='%s') }} \
+          --job_timeout={{ job_timeout }}
+      environment: "{{ pipeline_env }}"
+      when: runner_type == 'DataflowRunner'
+      register: dataflow_result
+    
+    - name: Extract job ID from Dataflow
+      ansible.builtin.set_fact:
+        dataflow_job_id: "{{ dataflow_result.stdout | regex_search('Job ID: ([\\w-]+)', '\\1') }}"
+      when: runner_type == 'DataflowRunner'
+    
+    - name: Monitor Dataflow Job
+      ansible.builtin.shell: |
+        gcloud dataflow jobs describe {{ dataflow_job_id[0] }} \
+          --region={{ gcp_region }} \
+          --format='value(STATUS)'
+      register: job_status
+      until: job_status.stdout in ['DONE', 'FAILED', 'CANCELLED']
+      delay: 30
+      retries: 120  # 1 hour timeout
+      when: runner_type == 'DataflowRunner'
+    
+    - name: Pipeline Execution Summary
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Pipeline Execution Summary
+          ========================================
+          
+          Runner: {{ runner_type }}
+          Status: {{ job_status.stdout if runner_type == 'DataflowRunner' else 'COMPLETED' }}
+          {% if runner_type == 'DataflowRunner' %}
+          Job ID: {{ dataflow_job_id[0] }}
+          Monitor: https://console.cloud.google.com/dataflow/jobs/{{ gcp_region }}/{{ dataflow_job_id[0] }}
+          {% endif %}
+          
+          Check Results:
+            bq query --use_legacy_sql=false 'SELECT COUNT(*) FROM {{ gcp_dataset_name }}.{{ gcp_bigquery_table }}'
+          
+          ========================================
+    
+    - name: Send Slack notification
+      ansible.builtin.uri:
+        url: "{{ slack_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          text: "Pipeline execution completed"
+          blocks:
+            - type: "section"
+              text:
+                type: "mrkdwn"
+                text: "*Pipeline Execution Summary*\n*Status*: {{ job_status.stdout if runner_type == 'DataflowRunner' else 'COMPLETED' }}\n*Environment*: {{ environment }}\n*Runner*: {{ runner_type }}"
+      when: slack_webhook_url | length > 0
+      ignore_errors: true
