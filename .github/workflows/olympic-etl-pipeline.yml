@@ -91,14 +91,14 @@ jobs:
           --skip_leading_rows=1 \
           --allow_jagged_rows \
           --replace \
-          ${{ env.BQ_DATASET }}.${{ env.BQ_TABLE }} \
+          my-olympic-etl:olympics_dataset.athletes \
           output/athletes.csv \
           athlete_id:STRING,name:STRING,country:STRING,sport:STRING,medal:STRING,medal_rank:INTEGER,year:INTEGER,_processed_at:TIMESTAMP,_pipeline_version:STRING,_environment:STRING
     
     - name: Verify Load
       run: |
         bq query --use_legacy_sql=false \
-          "SELECT COUNT(*) as total FROM \`${{ env.GCP_PROJECT }}.${{ env.BQ_DATASET }}.${{ env.BQ_TABLE }}\`"
+          "SELECT COUNT(*) as total FROM \`my-olympic-etl.olympics_dataset.athletes\`"
 
   notify:
     name: Pipeline Summary
