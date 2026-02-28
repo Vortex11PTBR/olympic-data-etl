@@ -88,11 +88,12 @@ jobs:
     - name: Load to BigQuery
       run: |
         bq load \
+          --project_id=my-olympic-etl \
           --source_format=CSV \
           --skip_leading_rows=1 \
           --allow_jagged_rows \
           --replace \
-          my-olympic-etl:olympics_dataset.athletes \
+          olympics_dataset.athletes \
           output/athletes.csv \
           athlete_id:STRING,name:STRING,country:STRING,sport:STRING,medal:STRING,medal_rank:INTEGER,year:INTEGER,_processed_at:TIMESTAMP,_pipeline_version:STRING,_environment:STRING
     
